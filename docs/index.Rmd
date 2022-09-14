@@ -1,0 +1,8 @@
+---
+title: "Guy McAtee bi portfolio"
+author: "Guy McAtee"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+## Here are a couple of recent projects built using Presto SQL and R
