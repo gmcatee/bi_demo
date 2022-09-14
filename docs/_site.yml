@@ -2,13 +2,13 @@ name: "Guy McAtee"
 output_dir: "docs"
 navbar:
   title: "BI Demos"
-left:
+  left:
   - text: "Home"
-href: index.html
-- text: "Merchant Delinquency Report"
-href: vendor_demo.html
-- text: "Experiment Phase 1 Report"
-href: exp_demo.html
+    href: index.html
+  - text: "Merchant Delinquency Report"
+    href: vendor_demo.html
+  - text: "Experiment Phase 1 Report"
+    href: exp_demo.html
 output:
   html_document:
   theme: cosmo
