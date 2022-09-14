@@ -1,0 +1,1393 @@
+---
+title: "Vendor Delinquency and Collections Report"
+author: "gmcatee"
+date: "`r Sys.Date()`"
+output:
+  rmdformats::readthedown:
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+knitr::opts_chunk$set(warning=FALSE)
+knitr::opts_chunk$set(message=FALSE)
+
+  library(dplyr)
+  library(highcharter)
+  library(lubridate)
+  library(reshape2)
+  library(stringr)
+  library(magrittr)
+  library(pins)
+  library(zoo)
+  library(htmlwidgets)
+  library(shiny)
+  library(shinyWidgets)
+  library(tidyr)
+  library(readr)
+  library(reactable)
+  library(reactablefmtr)
+  library(withr)
+  library(rlang)
+  library(webshot)
+  library(webshot2)
+  library(snapdragon)
+  
+  opts <- getOption("highcharter.lang")
+  opts$thousandsSep <- ","
+  options(highcharter.lang = opts)
+
+  
+```
+
+```{r pinned data, echo=FALSE}
+# randomize all data
+  pinned <- list()
+  pinned$raw <- 
+    read_csv("raw.csv") %>% 
+    mutate(
+      acctrefno = acctrefno * 7
+      , application_id = paste0(as.numeric(substr(application_id,1,9)) * 5, substr(application_id,10,12))
+      , customer_application_id = customer_application_id * 89
+      , person_id = person_id * 4
+    )
+
+  pinned$fpd <- read_csv("fpd.csv")
+  pinned$del_all <- read_csv("del_all.csv")
+  pinned$del_past_first <- read_csv("del_past_first.csv")
+  pinned$BCR <- read_csv("BCR.csv") %>% 
+    mutate(
+      acctrefno = acctrefno * 7
+      , application_id = paste0(as.numeric(substr(application_id,1,9)) * 5, substr(application_id,10,12))
+    )
+    
+  pinned$dollars <- read_csv("dollars.csv")
+    
+  
+```
+
+
+## Accounts Summary
+For a **Payment Method** breakdown please see Alan's TAB report: company URL
+```{r All Accounts}
+  nf <- c(# names from for renaming later
+  "Total Accounts" = "total",
+  "Active Accounts" = "active",
+  "Past 1st Pmt Accts" = 'past_first',
+  "Treatment Amt (SCU)" = "scu",
+  "Principal Amt" = "principal",
+  # "MTD Principal Amt" = "mtd_principal",
+  "Total Paid" = "paid",
+  "Total Funded" = "funded",
+  "PD Current" = "pd_current",
+  "PD Accounts" = "pd",
+  "PD 1-30" = "pd_1_30",
+  "PD 31-60" = "pd_31_60",
+  "PD 61-90" = "pd_61_90",
+  "PD 91+" = "pd_91_plus",
+  "FPR" = "fpr",
+  "FPD" = "fpd",
+  "CPO" = "cpo",
+  "CPR" = "cpr"
+)
+  
+  pinned$raw %>% 
+    mutate(
+      paying = ifelse(!is.na(past_due_amt) & account_status == "ACTIVE", 1, 0)
+    ) %>% 
+    summarise(
+      total__accounts = n_distinct(application_id),
+      active__accounts = n_distinct(application_id[paying == 1]),
+      scu__dollars = sum(scu_amt, na.rm = TRUE),
+      principal__dollars = sum(principal_balance, na.rm = TRUE),
+      # mtd_principal__dollars = sum(principal_balance[open_month == floor_date(today(), "month")], na.rm = TRUE),
+      paid__dollars = sum(net_paid_amt, na.rm = TRUE),
+      funded__dollars = sum(net_funded_amt, na.rm = TRUE),
+      pd_current__accounts = sum(dpd_bin[paying == 1] == "CURRENT", na.rm = TRUE),
+      pd__accounts = sum(dpd_bin[paying == 1] != "CURRENT", na.rm = TRUE),
+      pd_1_30__accounts = sum(dpd_bin[paying == 1] == "1-30", na.rm = TRUE),
+      pd_31_60__accounts = sum(dpd_bin[paying == 1] == "31-60", na.rm = TRUE),
+      pd_61_90__accounts = sum(dpd_bin[paying == 1] == "61-90", na.rm = TRUE),
+      pd_91_plus__accounts = sum(dpd_bin[paying == 1] == "91+", na.rm = TRUE),
+      pd__dollars = sum(past_due_amt[dpd_bin != "CURRENT"], na.rm = TRUE),
+      pd_1_30__dollars = sum(past_due_amt[dpd_bin == "1-30"], na.rm = TRUE),
+      pd_31_60__dollars = sum(past_due_amt[dpd_bin == "31-60"], na.rm = TRUE),
+      pd_61_90__dollars = sum(past_due_amt[dpd_bin == "61-90"], na.rm = TRUE),
+      pd_91_plus__dollars = sum(past_due_amt[dpd_bin == "90+"], na.rm = TRUE),
+      fpr__accounts = sum(fpr, na.rm = TRUE),
+      fpr__dollars = sum(net_funded_amt[fpr == 1], na.rm = TRUE),
+      fpd__accounts = sum(fpd, na.rm = TRUE),
+      fpd__dollars = sum(net_funded_amt[fpd == 1], na.rm = TRUE),
+      cpo__accounts = sum(cpo, na.rm = TRUE),
+      cpo__dollars = sum(net_funded_amt[cpo == 1], na.rm = TRUE)
+  ) %>% 
+  mutate(
+    across(
+      ends_with("accounts"),
+      ~ .x / active__accounts,
+      .names = "{.col}_pct"
+    ),
+    across(
+      ends_with("dollars"),
+      ~ .x / funded__dollars,
+      .names = "{.col}_pct"
+    ),
+    cpr__dollars_pct = paid__dollars / funded__dollars
+  ) %>% 
+  pivot_longer(cols = names(.),names_to = "metric", values_to = 'value') %>% 
+  mutate(
+    wide_label = gsub(".*__", "", metric),
+    metric = gsub("__.*", "", metric)
+  ) %>% 
+  pivot_wider(names_from = wide_label) %>% 
+  mutate(
+    metric = factor(metric, levels = nf, labels = names(nf))
+  ) %>% 
+  reactable(
+    width=570,
+    defaultExpanded = TRUE,
+    borderless = TRUE,
+    sortable = FALSE,
+    highlight = TRUE,
+    striped = TRUE,
+    wrap = FALSE,
+    compact = TRUE,
+    defaultPageSize = 100,
+    defaultColDef = colDef(width = 100),
+    style = list(
+      fontSize = "14px"
+    ),
+    columns = list(
+      metric = colDef("Metric", width = 150,  style = list(borderRight = "2px solid #335aaf")),
+      accounts = colDef("Acct #", style = list(background = "#335aaf1a")),
+      accounts_pct = colDef("Acct %", format = colFormat(percent = TRUE, digits = 2), style = list(background = "#335aaf1a")),
+      dollars = colDef("Dllr $", format = colFormat(prefix = "$", separators = TRUE, digits = 0), style = list(background = "#335aaf1a")),
+      dollars_pct = colDef("Dllr %", format = colFormat(percent = TRUE, digits = 2), style = list(borderRight = "2px solid #335aaf", background = "#335aaf1a"))
+    ),
+    rowStyle = JS(
+      "
+      function(rowInfo) { // need to highlight denominators for columns
+        if (rowInfo.level === 0 && (rowInfo.row['metric'] === 'Total Funded' || rowInfo.row['metric'] === 'Active Accounts')) {
+          return {fontWeight: 800}
+        }
+        
+      }
+      "
+    )
+  )
+
+```
+
+## Weekly Number of vendor Loans
+```{r completed loans}
+vendor_wk_apps <- pinned$raw %>% 
+  filter(!is.null(net_funded_amt)) %>% 
+  group_by(week=floor_date(complete_dt, 'week', week_start = 1)) %>% 
+  summarise(n=n()) %>% 
+  mutate(
+    n=cumsum(n)
+  ) %>% 
+  group_by(type='line', name = "Funded Loans", color = sd_palette[1], lineWidth = 4) %>% 
+  arrange(week) %>% 
+    do(data=list_parse(
+      data.frame(
+      x=datetime_to_timestamp(.$week), y=.$n
+      )
+    ))
+
+highchart(type='stock') %>% 
+  # sdhc_title("Number of vendor Loans") %>% 
+  hc_add_series_list(
+    vendor_wk_apps
+  ) %>%
+  hc_navigator(enabled=FALSE) %>%
+  hc_rangeSelector(enabled=FALSE) %>%
+  hc_scrollbar(enabled=FALSE) %>% 
+  hc_size(
+    height = 300
+  )
+```
+
+## First Payments Due by Week
+```{r vendor daily payments due}
+
+vendor_wk <- pinned$raw %>% 
+  group_by(week=floor_date(first_payment_dt, 'week', week_start = 1)) %>% 
+  summarise(n=n()) %>% 
+  group_by(
+    type='line'
+    , name = "First Payments Due"
+    , color="#5BC2E7"
+    , lineWidth = 4
+  ) %>% 
+  arrange(week) %>% 
+    do(data=list_parse(
+      data.frame(
+      x=datetime_to_timestamp(.$week), y=.$n
+      )
+    ))
+
+highchart(type='stock') %>% 
+  # sdhc_title("First Payments Due by Week") %>% 
+  hc_add_series_list(
+    vendor_wk
+  ) %>%
+  hc_yAxis(title = "First Payments Due") %>% 
+  hc_navigator(enabled=FALSE) %>%
+  hc_rangeSelector(enabled=FALSE) %>%
+  hc_scrollbar(enabled=FALSE) %>% 
+  hc_size(
+    height = 300
+  )
+
+  
+```
+
+## First Payment Default Rates
+
+```{r day choice, eval=FALSE}
+radioGroupButtons(
+      "day",
+      label = "Choose a Static Day", status = "info",
+      individual = TRUE, size = "sm", choices = c(4,7,15),
+      selected = 7
+)
+```
+
+```{r FPD}
+hcdf_fpd <-
+  # reactive({
+  pinned$fpd %>%
+    filter(
+      day == 7
+      & apps >= 20 # lose small volumme days
+      # filter out cohorts that are not fully baked
+      & first_pmt_cohort <= floor_date(Sys.Date()-(7+ 7), 'week', week_start = 1)
+    ) %>% 
+    mutate(
+      yr = year(first_pmt_cohort)
+    ) %>% 
+    group_by(
+      type = 'line',
+      color = case_when(
+        yr == year(Sys.Date()) ~ snap_blue,
+        yr == year(Sys.Date()) - 1 ~ snap_blue_light,
+        yr == year(Sys.Date()) - 2 ~ snap_grey_med,
+        yr ==year(Sys.Date())-3 ~ snap_green
+      ),
+      lineWidth = case_when(
+        yr == year(Sys.Date()) ~ 3,
+        yr == year(Sys.Date()) - 1 ~ 2,
+        yr == year(Sys.Date()) - 2 ~ 2,
+        yr == year(Sys.Date())-3 ~ 2
+      )
+    ) %>%
+    do(data=list_parse(
+      data.frame(
+        x = datetime_to_timestamp(.$first_pmt_cohort),
+        y = round(.$fpd_acct * 100 ,2),
+        accts = .$apps,
+        fpd_count = round(.$apps * .$fpd_acct, 0),
+        date = .$first_pmt_cohort
+      )
+    ))
+# })
+
+# renderHighchart({
+  
+  sd_highchart('stock') %>%
+    sdhc_title(text=paste0("FPD @ Day 7")) %>%
+     sdhc_subtitle(text='Only weeks with >= 20 accts') %>%
+    hc_add_series_list(hcdf_fpd) %>%
+    hc_yAxis(
+      labels=list(format='{value}%')
+    ) %>%
+    hc_xAxis(
+      title = list(text='Week')
+    ) %>%
+    hc_yAxis(
+      title = list(text='FPD Rate')
+    ) %>%
+    hc_plotOptions(
+      series =list(marker=list(enabled=FALSE))
+    ) %>%
+    hc_tooltip(
+      split=TRUE,
+      pointFormat = paste0("<b>{point.date}</b> <br> FPD Rate: {point.y}% 
+                           <br> {point.fpd_count}/{point.accts}"),
+      headerFormat = ""
+    ) %>% 
+    hc_navigator(enabled=FALSE) %>%
+    hc_rangeSelector(enabled=FALSE) %>%
+    hc_scrollbar(enabled=FALSE) %>% 
+    hc_size(
+      height = 350
+    )
+
+# })
+
+# vendor_overview %>% 
+#   filter(
+#     first_payment_dt<= Sys.Date()-1
+#   ) %>% 
+#   summarise(
+#    `Total Accounts` = n(),
+#    `Avg Princ Balance` = round(mean(principal_balance, na.rm=T),0),
+#    `Principal Balance` = round(sum(principal_balance, na.rm=T),0),
+#    `Total Paid` = round(sum(net_paid_amt_effective, na.rm=T),0),
+#    fpd_count = sum(fpd_effective == TRUE, na.rm=T),
+#    cpo_count = sum(cpo == TRUE, na.rm=T),
+#    Current = sum(dpd_bin == "Current"),
+#    `1-30` = sum(dpd_bin == "1-30"),
+#    `31-60` = sum(dpd_bin == "31-60")
+#   ) %>% 
+#   mutate(
+#     fpd_rate = round((fpd_count / `Total Accounts`)*100,0)
+#   ) %>% 
+#   pivot_longer(
+#     cols = c(`Total Accounts`, `Avg Princ Balance`,`Principal Balance`, `Total Paid`,
+#              fpd_count, fpd_rate, cpo_count, Current, `1-30`, `31-60`), 
+#     names_to = "name", values_to = "value"
+#   ) %>% 
+#   mutate(
+#     value = case_when(
+#       name == 'Principal Balance' ~ paste0('$',format(value, big.mark = ",")),
+#       name == 'Avg Princ Balance' ~ paste0('$',format(value, big.mark = ",")),
+#       name == 'Total Paid' ~ paste0('$',format(value, big.mark = ",")),
+#       name == 'fpd_rate' ~ paste0(value,"%"),
+#       TRUE ~ as.character(format(value, big.mark = ",")) 
+#     )
+#   ) %>% 
+#   mutate_all(stringr::str_replace_all, pattern=fixed("$"), replacement="\\$") %>% 
+#   knitr::kable()
+
+```
+
+```{r Delinquency}
+#### all accts ####
+plot_data_sln_vendor <- pinned$del_all %>% 
+  mutate(
+    tranche = factor(
+      tranche,
+      levels = c(
+        'Current',
+        '1-7',
+        '8-14',
+        '15-29',
+        '30-44',
+        '45-59',
+        '60-74',
+        '75-90'
+      )
+    ),
+    delinquency_stage = case_when(
+      as.character(tranche) == '1-7' ~ 'Early',
+      as.character(tranche) == '8-14' ~ 'Early',
+      as.character(tranche) == '15-29' ~ 'Mid',
+      as.character(tranche) == '30-44' ~ 'Mid',
+      as.character(tranche) == '45-59' ~ 'Late',
+      as.character(tranche) == '60-74' ~ 'Late',
+      as.character(tranche) == '75-90' ~ 'Late',
+      TRUE ~ as.character(tranche)
+    ) %>% factor(
+      levels = c(
+        'Current',
+        'Early',
+        'Mid',
+        'Late',
+        'ChargeOff'
+      )
+    )
+  ) %>%
+  arrange(
+    desc(day),
+    tranche
+  ) %>% 
+  filter(
+    weekdays(day) == "Monday"
+  ) %>% 
+  mutate(
+    dow = weekdays(day),
+    year = factor(year(day)),
+    day_of_year = case_when(
+      year == as.character(year(Sys.Date())) ~ as.numeric(yday(day)),
+      year == as.character(year(Sys.Date())-1) ~ as.numeric(yday(day))-2,
+      year == as.character(year(Sys.Date())-2) ~ as.numeric(yday(day)) -3,
+      year == as.character(year(Sys.Date())-3) ~ as.numeric(yday(day)) -2
+    )
+  ) %>%
+  ungroup() %>% 
+  group_by(
+    day
+  ) %>%
+  mutate(
+    delbal = sum(balance[tranche != 'Current'], na.rm = TRUE),
+    tbal = sum(balance, na.rm = TRUE),
+    delpct = delbal/tbal,
+    pct = balance / tbal,
+    # get day of week to be same f
+    date_label = case_when(
+      year == year(Sys.Date())~day,
+      year == year(Sys.Date())-1~ day+364,
+      year == year(Sys.Date())-2~ day+728
+    )
+  ) %>%
+  select(
+    day,
+    year,
+    dow,
+    day_of_year,
+    date_label,
+    tranche,
+    delinquency_stage,
+    accts,
+    balance,
+    delbal,
+    tbal,
+    delpct,
+    pct
+  ) %>% 
+  mutate(
+    color = case_when(
+      tranche == 'Hardship' ~ '#696969',
+      tranche == '1-7' ~ '#FC8D62',
+      tranche == '8-14' ~ '#8DA0CB',
+      tranche == '15-29' ~ '#E78AC3',
+      tranche == '30-44' ~ '#A6D854',
+      tranche == '45-59' ~ '#FFD92F',
+      tranche == '60-74' ~ '#E5C494',
+      tranche == '75-90' ~ '#B3B3B3',
+      TRUE ~ '#003767'
+    ),
+    balance = ifelse(is.na(balance),0,balance),
+    pct = ifelse(is.na(pct),0,pct)
+  ) 
+
+#### Past first payment date ####
+past_first_del <- pinned$del_past_first %>% 
+  mutate(
+    tranche = factor(
+      tranche,
+      levels = c(
+        'Current',
+        '1-7',
+        '8-14',
+        '15-29',
+        '30-44',
+        '45-59',
+        '60-74',
+        '75-90'
+      )
+    ),
+    delinquency_stage = case_when(
+      as.character(tranche) == '1-7' ~ 'Early',
+      as.character(tranche) == '8-14' ~ 'Early',
+      as.character(tranche) == '15-29' ~ 'Mid',
+      as.character(tranche) == '30-44' ~ 'Mid',
+      as.character(tranche) == '45-59' ~ 'Late',
+      as.character(tranche) == '60-74' ~ 'Late',
+      as.character(tranche) == '75-90' ~ 'Late',
+      TRUE ~ as.character(tranche)
+    ) %>% factor(
+      levels = c(
+        'Current',
+        'Early',
+        'Mid',
+        'Late',
+        'ChargeOff'
+      )
+    )
+  ) %>%
+  arrange(
+    desc(day),
+    tranche
+  ) %>% 
+  filter(
+    weekdays(day) == "Monday"
+  ) %>% 
+  mutate(
+    dow = weekdays(day),
+    year = factor(year(day)),
+    day_of_year = case_when(
+      year == as.character(year(Sys.Date())) ~ as.numeric(yday(day)),
+      year == as.character(year(Sys.Date())-1) ~ as.numeric(yday(day))-2,
+      year == as.character(year(Sys.Date())-2) ~ as.numeric(yday(day)) -3,
+      year == as.character(year(Sys.Date())-3) ~ as.numeric(yday(day)) -2
+    )
+  ) %>%
+  ungroup() %>% 
+  group_by(
+    day
+  ) %>%
+  mutate(
+    delbal = sum(balance[tranche != 'Current'], na.rm = TRUE),
+    tbal = sum(balance, na.rm = TRUE),
+    delpct = delbal/tbal,
+    pct = balance / tbal,
+    # get day of week to be same f
+    date_label = case_when(
+      year == year(Sys.Date())~day,
+      year == year(Sys.Date())-1~ day+364,
+      year == year(Sys.Date())-2~ day+728
+    )
+  ) %>%
+  select(
+    day,
+    year,
+    dow,
+    day_of_year,
+    date_label,
+    tranche,
+    delinquency_stage,
+    accts,
+    balance,
+    delbal,
+    tbal,
+    delpct,
+    pct
+  ) %>% 
+  mutate(
+    color = case_when(
+      tranche == 'Hardship' ~ '#696969',
+      tranche == '1-7' ~ '#FC8D62',
+      tranche == '8-14' ~ '#8DA0CB',
+      tranche == '15-29' ~ '#E78AC3',
+      tranche == '30-44' ~ '#A6D854',
+      tranche == '45-59' ~ '#FFD92F',
+      tranche == '60-74' ~ '#E5C494',
+      tranche == '75-90' ~ '#B3B3B3',
+      TRUE ~ '#003767'
+    ),
+    balance = ifelse(is.na(balance),0,balance),
+    pct = ifelse(is.na(pct),0,pct)
+  )
+
+#### plot for delinquency ####
+vendor_del_plot <- function(
+    df = data.frame(),
+    metric = 'pct',
+    plotType = 'line',
+    product = 'SLN'
+) {
+  
+  if(metric == 'pct') {
+    myFormatYAxis <- '{value}%'
+    myFormatTType <- 'percent'
+    myFormatTPreA <- ''
+    myFormatTDigits <- 2
+  } else {
+    myFormatYAxis <- '${value:,.0f}M'
+    myFormatTType <- 'dollar'
+    myFormatTPreA <- 'M'
+    myFormatTDigits <- 3
+  }
+  
+  if(plotType == 'line') {
+    type = 'line'
+    stacking = NA
+  } else if (plotType == 'column') {
+    type = 'column'
+    stacking = 'normal'
+  }
+  
+  subtitle<-ifelse(product=='SLN',
+                   "Balance = what each account would pay if they paid off on the current day",
+                   "Balance = full term balance - paid amount"
+  )
+  title<-ifelse(
+    metric=='pct',
+    "Percent of Dollars",
+    "Dollars"
+  )
+  
+
+  
+  hcdf <- df %>%
+    mutate(
+      tranche = factor(tranche, levels = rev(levels(tranche)))
+    ) %>%
+    filter(
+      tranche != 'Current'
+    ) %>% 
+    mutate(
+      pct = pct * 100,
+      balance = round(balance)/1000000,
+      y = eval(sym(metric))
+    ) %>% 
+    arrange(
+      day
+    ) %>%
+    group_by(
+      name = tranche,
+      type = eval(type),
+      color = color,
+      borderWidth = 1,
+      borderColor = 'white',
+      stacking = eval(stacking)
+    ) %>%
+    do(data=list_parse(
+      data.frame(
+        x = datetime_to_timestamp(.$day),
+        y=.$y,
+        bal=.$balance,
+        pct=.$pct*100
+      )
+    )
+    )
+  
+  sd_highchart(type='stock') %>%
+    sdhc_subtitle(
+      text = paste0('Pct. of Dollars Delinquent')
+    ) %>%
+    hc_add_series_list(
+      hcdf
+    ) %>%
+    hc_yAxis(
+      labels=list(format=myFormatYAxis),
+      opposite=FALSE
+    ) %>% 
+    sdhc_tooltip(
+      numberFormat = myFormatTType,
+      digits = myFormatTDigits,
+      preappend = myFormatTPreA
+      # append = 'Tranche Bal: ${point.bal:,.0f}</br><br>Tranche Pct: {point.pct:,.2f}%<br><br>Hardship Bal: ${point.hsb:,.of}<br><br>Hardship Pct: {point.hspct:,.2f}%<br>'
+    ) %>%
+    hc_plotOptions(
+      series = list(
+        grouping = TRUE,
+        pointPadding = NULL,
+        pointRange = NULL,
+        pointWidth = NULL,
+        groupPadding = 0
+      )
+    ) %>% 
+    hc_legend(
+      enabled=TRUE,
+      reversed = TRUE
+    ) %>% 
+    hc_navigator(enabled=FALSE) %>%
+    hc_rangeSelector(enabled=FALSE) %>%
+    hc_scrollbar(enabled=FALSE)
+}
+
+
+# vendor_del_plot(plot_data_sln_vendor, 'pct','column','SLN')
+
+```
+
+## Pct of Dollars Delinquent: Accounts Past First Payment Date
+```{r del past first payment}
+vendor_del_plot(past_first_del, 'pct', 'column', 'SLN')
+```
+
+```{r del table}
+
+  past_first_del %>%
+    filter(
+      day >= '2022-04-18'
+    ) %>%
+    rename(
+      Tranche = tranche
+    ) %>% 
+    mutate(
+      day,
+      pct = pct,#round(pct,4)*100,
+      balance = paste0('$',round(balance/1000000,3),'M')
+    ) %>%
+    select(
+      day,
+      Tranche,
+      pct
+    ) %>% arrange(Tranche, desc(day)) %>% 
+    mutate(day=format(day, '%m/%d/%y')) %>% 
+    pivot_wider(
+      names_from = day,
+      values_from = pct
+    ) %>%
+    reactable(
+      defaultColDef = colDef(
+        cell = color_tiles(., tooltip=TRUE, colors = RColorBrewer::brewer.pal(10,'Reds'),
+                           span=TRUE, number_fmt = scales::label_percent(accuracy = .01))
+      )
+    )
+
+```
+
+## Bring Current Rate Summary (Including current week)
+```{r Total BCR}
+ABC <- pinned$BCR %>% 
+  mutate(
+      Date2 = ifelse(multiply_to == -1, NA, Date2),
+      Date1 = as.Date(Date1),
+      Date2 = as.Date(Date2),
+      Week = floor_date(Date1, "week", week_start = 1),
+      Year = year(Week),
+      Days = as.numeric(Days),
+      DaysAbs = abs(Days),
+      BCAed = (Days >= 0 & Days <= 180) & !is.na(Date2),
+      Wday = lubridate::wday(Date1, label = TRUE),
+      Mnth = lubridate::month(Date1, label = TRUE),
+      Day = lubridate::day(Date1),
+      DelinquencyAge7 = case_when(
+        as.numeric(round(Date2 - Date1)) == 0 ~ -1,
+        TRUE ~ round(as.numeric(round(Date2 - Date1)/7))
+      ),
+      DelinquencyAge7 = ifelse(DelinquencyAge7 >= 9, 9, DelinquencyAge7)
+    )
+
+# overall rate
+ABC %>% 
+  mutate(
+    Age = case_when(
+      DelinquencyAge7 == -1 ~ 'Day 0',
+      DelinquencyAge7 == 0 ~ 'Week 1',
+      DelinquencyAge7 == 1 ~ 'Week 2',
+      DelinquencyAge7 >= 2 ~ 'Week 3+'
+    )
+  ) %>% 
+  summarise(
+    Delinquencies = n(),
+    Recoveries = sum(!is.na(Date2), na.rm=T),
+    Rate = round((Recoveries/Delinquencies),4)
+  ) %>% 
+  reactable(
+    width = 500,
+    borderless = TRUE,
+    highlight = TRUE,
+    striped = TRUE,
+    wrap = FALSE,
+    compact = TRUE,
+    style = list(
+      fontSize = "18px"
+    ),
+    columns = list(
+      Rate = colDef(
+        width = 150,
+        format = colFormat(percent=T)
+      ),
+      Delinquencies = colDef(
+        width = 150,
+        format = colFormat(separators = TRUE)
+      ),
+      Recoveries = colDef(
+        width = 150
+      )
+    )
+  )
+```
+
+## Bring Current Rates by Age (Including current week)
+```{r BCR age}
+
+abcDels <- ABC %>% 
+  summarise(
+    Delinquencies=n()
+  ) 
+  
+ABC %>% 
+  mutate(
+    Age = case_when(
+      DelinquencyAge7 == -1 ~ 'Day 0',
+      DelinquencyAge7 == 0 ~ 'Week 1',
+      DelinquencyAge7 == 1 ~ 'Week 2',
+      DelinquencyAge7 >= 2 ~ 'Week 3+'
+    )
+  ) %>% 
+  group_by(
+    Age
+  ) %>% 
+  filter(
+    !is.na(Age) 
+  ) %>% 
+  summarise(
+    Recoveries = sum(!is.na(Date2), na.rm=T)
+  ) %>% 
+  left_join(
+    expand.grid(
+      Delinquencies = abcDels$Delinquencies,
+      Age = c('Day 0','Week 1','Week 2','Week 3+')
+    )
+  ) %>% 
+  mutate(
+    Rate = round((Recoveries/Delinquencies),4)
+  ) %>% 
+  select(Age, Delinquencies, Recoveries, Rate) %>% 
+  reactable(
+    width = 550,
+    borderless = TRUE,
+    highlight = TRUE,
+    striped = TRUE,
+    wrap = FALSE,
+    compact = TRUE,
+    style = list(
+      fontSize = "18px"
+    ),
+    columns = list(
+      Rate = colDef(
+        width = 150,
+        format = colFormat(percent=T)
+      ),
+      Delinquencies = colDef(
+        width = 150,
+        format = colFormat(separators = TRUE)
+      ),
+      Recoveries = colDef(
+        width = 150
+      ),
+      Age = colDef(
+        width = 90
+      )
+    )
+  )
+
+```
+
+
+## Bring Current Rates by Week (Excluding current week)
+```{r BCR}
+vendorBCR_cleaned <- pinned$BCR %>% 
+  mutate(
+      Date2 = ifelse(multiply_to == -1, NA, Date2),
+      Date1 = as.Date(Date1),
+      Date2 = as.Date(Date2),
+      Week = floor_date(Date1, "week", week_start = 1),
+      Year = year(Week),
+      Days = as.numeric(Days),
+      DaysAbs = abs(Days),
+      BCAed = (Days >= 0 & Days <= 180) & !is.na(Date2),
+      Wday = lubridate::wday(Date1, label = TRUE),
+      Mnth = lubridate::month(Date1, label = TRUE),
+      Day = lubridate::day(Date1),
+      DelinquencyAge7 = case_when(
+        as.numeric(round(Date2 - Date1)) == 0 ~ -1,
+        TRUE ~ round(as.numeric(round(Date2 - Date1)/7))
+      ),
+      DelinquencyAge7 = ifelse(DelinquencyAge7 >= 9, 9, DelinquencyAge7)
+    )
+
+vendorDels <- vendorBCR_cleaned %>% 
+  group_by(
+    Week
+  ) %>% 
+  summarise(
+    Delinquencies=n()
+  )
+
+#dplyr version of recs0
+vendorRecs <- vendorBCR_cleaned %>% 
+  group_by(
+    Week, DelinquencyAge7
+  ) %>% 
+  filter(
+    !is.na(DelinquencyAge7) 
+  ) %>% 
+  summarise(
+    Recs = sum(!is.na(Date2), na.rm=T)
+  )
+
+AllDaysSLN <- 
+  expand.grid(
+    Week = unique(vendorRecs$Week),
+    DelinquencyAge7 = -1:9
+  )
+
+#BCRecs
+vendorRecs <- 
+  AllDaysSLN %>% 
+  left_join(vendorRecs, by = c("Week", "DelinquencyAge7")) %>% 
+  mutate(
+    # Fill in empty dates with 0s
+    Recoveries = ifelse(is.na(Recs), 0, Recs),
+    # Make sure future dates are NA
+    Recoveries = ifelse((as.Date(Week) + abs(DelinquencyAge7)*7) > Sys.Date() & Recoveries == 0, NA,Recoveries)
+  )
+
+BCvendor<- vendorRecs %>% 
+  left_join(
+    vendorDels, by = c("Week"), all.x = TRUE
+  ) %>% 
+  mutate(
+    BCRate = Recoveries/Delinquencies,
+    # #data needs to be grouped by Week to get this
+    # BCRateCum = CumRecoveries/Delinquencies,
+    DelinquencyAge7 = factor(
+      DelinquencyAge7,
+      labels = c("Day 0", "Week 1", "Week 2", "Week 3", "Week 4", "Week 5",
+                 "Week 6", "Week 7", "Week 8", "Week 9", "Week 10+"))
+  ) %>% filter(Week < floor_date(Sys.Date(), 'week', week_start = 1)) %>% 
+  group_by(
+    Week
+  ) %>% 
+  arrange(DelinquencyAge7) %>% 
+  mutate(
+    CumlRecoveries = cumsum(Recoveries),
+    BCRateCuml = (CumlRecoveries/Delinquencies),
+    BCRate = BCRate
+  ) %>% 
+  replace_na(
+    list(BCRateCuml = 0)
+  )
+
+vendorBCRheatmap <- function(
+    df, 
+    myProd = 'SLN',
+    myDay = NULL, 
+    myRate = "Individual"
+    ){
+  
+  myDayLabel = case_when(
+    myDay == 'Mon' ~ ' - Monday',
+    myDay == 'Tue' ~ ' - Tuesday',
+    myDay == 'Wed' ~ ' - Wednesday',
+    myDay == 'Thu' ~ ' - Thursday',
+    myDay == 'Fri' ~ ' - Friday',
+    myDay == 'Sat' ~ ' - Saturday',
+    myDay == 'Sun' ~ ' - Sunday',
+    myDay == ' ' ~ ' '
+  )
+  
+  #### color fxn ####
+  # modified the reactablefmtr color_tiles to hide NA ( rough work around relying on the tooltip )
+  my_color_tiles <- function (data, colors = c("#15607A", "#FFFFFF", "#FA8C00"), 
+                              color_ref = NULL, color_by = NULL, opacity = 1, bias = 1, 
+                              number_fmt = NULL, text_size = NULL, text_color = "black", 
+                              text_color_ref = NULL, show_text = TRUE, brighten_text = TRUE, 
+                              brighten_text_color = "white", bold_text = FALSE, span = FALSE, 
+                              box_shadow = FALSE, tooltip = FALSE, animation = "background 1s ease") 
+  {
+    if (!is.logical(bold_text)) {
+      stop("`bold_text` must be TRUE or FALSE")
+    }
+    if (!is.logical(brighten_text)) {
+      stop("`brighten_text` must be TRUE or FALSE")
+    }
+    if (!is.logical(box_shadow)) {
+      stop("`box_shadow` must be TRUE or FALSE")
+    }
+    if (!is.logical(tooltip)) {
+      stop("`tooltip` must be TRUE or FALSE")
+    }
+    if (!is.numeric(bias)) {
+      stop("`bias` must be numeric")
+    }
+    if (!is.numeric(opacity)) {
+      stop("`opacity` must be numeric")
+    }
+    if (opacity < 0 | opacity > 1) {
+      stop("`opacity` must be a value between 0 and 1")
+    }
+    if (length(text_color) > 1) {
+      stop("multiple colors detected in `text_color`. only one color can be used.")
+    }
+    if (length(brighten_text_color) > 1) {
+      stop("multiple colors detected in `brighten_text_color` only one color can be used.")
+    }
+    
+    color_pal <- function(x) {
+      if (!is.na(x)) 
+        rgb(colorRamp(c(colors), bias = bias)(x), maxColorValue = 255)
+      else NULL
+    }
+    
+    assign_color <- function(x) {
+      if (!is.na(x)) {
+        rgb_sum <- rowSums(colorRamp(c(colors), bias = bias)(x))
+        color <- ifelse(rgb_sum >= 395, text_color, brighten_text_color)
+        color
+      }
+      else NULL
+    }
+    if (bold_text == TRUE) {
+      bold_text <- "bold"
+    }
+    else bold_text <- "normal"
+    if (box_shadow == TRUE) {
+      box_shadow <- "0 6px 6px -4px #888888"
+    }
+    else box_shadow <- NULL
+    # this is teh function used by 
+    cell <- function(value, index, name) {
+      if (is.na(value)) {
+        label <- ""
+      }
+      else {
+        label <- number_fmt(value)
+      }
+      tooltip_label <- sprintf("<span style=\"font-size:1.5em\">%s</span>", 
+                               label)
+      if (is.logical(span)) {
+        if (span) {
+          normalized <- (value - min(dplyr::select_if(data, 
+                                                      is.numeric), na.rm = TRUE))/(max(dplyr::select_if(data, 
+                                                                                                        is.numeric), na.rm = TRUE) - min(dplyr::select_if(data, 
+                                                                                                                                                          is.numeric), na.rm = TRUE))
+        }
+        else if (!is.null(color_ref)) {
+          normalized <- dplyr::ntile(data[[name]], n = length(colors))
+        }
+        else {
+          if (is.character(color_by)) {
+            if (all(color_by %in% names(which(sapply(data, 
+                                                     is.numeric))))) {
+              if (is.character(color_by)) {
+                color_by <- which(names(data) %in% color_by)
+              }
+              if (is.numeric(data[[color_by]]) & mean((data[[color_by]] - 
+                                                       mean(data[[color_by]], na.rm = TRUE))^2, 
+                                                      na.rm = TRUE) == 0) {
+                normalized <- 1
+              }
+              else {
+                normalized <- (data[[color_by]][index] - 
+                                 min(data[[color_by]], na.rm = TRUE))/(max(data[[color_by]], 
+                                                                           na.rm = TRUE) - min(data[[color_by]], 
+                                                                                               na.rm = TRUE))
+              }
+              cell_color <- color_pal(normalized)
+              cell_color <- suppressWarnings(grDevices::adjustcolor(cell_color, 
+                                                                    alpha.f = opacity))
+              font_color <- assign_color(normalized)
+            }
+            else {
+              stop("Attempted to select non-existing column or non-numeric column with color_by")
+            }
+          }
+          else {
+            if (is.numeric(value) & mean((data[[name]] - 
+                                          mean(data[[name]], na.rm = TRUE))^2, na.rm = TRUE) == 
+                0) {
+              normalized <- 1
+            }
+            else {
+              normalized <- (value - min(data[[name]], 
+                                         na.rm = TRUE))/(max(data[[name]], na.rm = TRUE) - 
+                                                           min(data[[name]], na.rm = TRUE))
+            }
+            cell_color <- color_pal(normalized)
+            cell_color <- suppressWarnings(grDevices::adjustcolor(cell_color, 
+                                                                  alpha.f = opacity))
+            font_color <- assign_color(normalized)
+          }
+        }
+        if (is.character(text_color_ref)) {
+          if (all(text_color_ref %in% names(which(sapply(data, 
+                                                         is.character))))) {
+            if (is.character(text_color_ref)) {
+              text_color_ref <- which(names(data) %in% 
+                                        text_color_ref)
+            }
+            font_color <- data[[text_color_ref]][index]
+            text_color <- data[[text_color_ref]][index]
+          }
+          else {
+            stop("Attempted to select non-existing column or non-character column with text_color_ref")
+          }
+        }
+        else {
+          font_color <- text_color
+        }
+        if (is.character(color_ref)) {
+          if (all(color_ref %in% names(which(sapply(data, 
+                                                    is.character))))) {
+            if (is.character(color_ref)) {
+              color_ref <- which(names(data) %in% color_ref)
+            }
+            cell_color <- data[[color_ref]][index]
+            cell_color <- suppressWarnings(grDevices::adjustcolor(cell_color, 
+                                                                  alpha.f = opacity))
+            rgb_sum <- rowSums((grDevices::colorRamp(c(cell_color), 
+                                                     bias = bias))(1))
+            font_color <- ifelse(rgb_sum >= 395, text_color, 
+                                 brighten_text_color)
+          }
+          else {
+            stop("Attempted to select non-existing column or non-character column with fill_color_ref")
+          }
+        }
+        else {
+          cell_color <- color_pal(normalized)
+          cell_color <- suppressWarnings(grDevices::adjustcolor(cell_color, 
+                                                                alpha.f = opacity))
+          font_color <- assign_color(normalized)
+        }
+      }
+      else if (is.numeric(span) | is.character(span)) {
+        if (all(span %in% which(sapply(data, is.numeric))) | 
+            all(span %in% names(which(sapply(data, is.numeric))))) {
+          if (is.character(span)) {
+            span <- which(names(data) %in% span)
+          }
+          normalized <- (value - min(dplyr::select(data, 
+                                                   !!span), na.rm = TRUE))/(max(dplyr::select(data, 
+                                                                                              !!span), na.rm = TRUE) - min(dplyr::select(data, 
+                                                                                                                                         !!span), na.rm = TRUE))
+          cell_color <- if (name %in% colnames(data)[span]) {
+            suppressWarnings(grDevices::adjustcolor(color_pal(normalized), 
+                                                    alpha.f = opacity))
+          }
+          font_color <- if (name %in% colnames(data)[span]) {
+            assign_color(normalized)
+          }
+        }
+        else {
+          stop("Attempted to select non-existing or non-numeric columns with span")
+        }
+      }
+      
+        if (tooltip == TRUE) {
+          htmltools::tagAppendChild(htmltools::div(style = list(background = cell_color, 
+                                                                color = font_color, display = "flex", flexDirection = "column", 
+                                                                justifyContent = "center", alignItems = "center", 
+                                                                borderRadius = "2px", boxShadow = box_shadow, 
+                                                                fontWeight = bold_text, fontSize = text_size, 
+                                                                transition = animation)
+          )
+          , tippy::tippy(label, 
+                         animateFill = FALSE, followCursor = FALSE, 
+                         tooltip = tooltip_label, trigger = 'click')
+          )
+        }
+        else {
+          htmltools::div(style = list(background = cell_color, 
+                                      color = font_color, display = "flex", flexDirection = "column", 
+                                      justifyContent = "center", alignItems = "center", 
+                                      borderRadius = "2px", boxShadow = box_shadow, 
+                                      fontWeight = bold_text, fontSize = text_size, 
+                                      transition = animation))
+        }
+      }
+    }
+  
+  #### plot create ####
+  
+  if(myRate == "Individual"){
+    myValue <- 'BCRate'
+  }else{
+    myValue <- 'BCRateCuml'
+  }  
+  
+  
+  if(!is.null(myDay)){ # daily manip
+    plotdf <- df %>% filter(Wday == eval(myDay)) %>%
+      group_by(
+        Week
+      ) %>% 
+      arrange(DelinquencyAge7) %>% 
+      mutate(
+        CumlRecoveries = cumsum(Recs),
+        BCRateCuml = (CumlRecoveries/Delinquencies)
+      ) %>% 
+      select(
+        Cohort="Week",
+        Age = "DelinquencyAge7",
+        value = {{ myValue }}
+      ) %>% 
+      mutate(
+        x = as.numeric(factor(Age))
+      ) %>% 
+      filter(
+        x - 1 < (floor_date(Sys.Date(), 'week', week_start = 1) -  Cohort) / 7
+      ) %>% select(-x) %>% 
+      pivot_wider(
+        names_from = "Age", values_from = "value"
+      ) %>% 
+      left_join(
+        df %>% filter(Wday== {{myDay}}) %>% 
+          distinct(Week, Wday, Delinquencies) %>% 
+          select(Cohort='Week', Delinquencies), by = "Cohort"
+      ) %>% 
+      select(
+        Cohort, "New Dels"=Delinquencies, where(is.double)
+      ) %>% 
+      arrange(desc(Cohort)) 
+    
+  }else{#weekly
+    plotdf <- df %>% 
+      select(Cohort='Week', Age="DelinquencyAge7", value = {{ myValue }}) %>% 
+      mutate(
+        x = as.numeric(factor(Age))
+      ) %>% 
+      filter(
+        x - 1 < (floor_date(Sys.Date(), 'week', week_start = 1) -  Cohort) / 7
+      ) %>% 
+      select(-x) %>% 
+      arrange(Age, desc(Cohort)) %>% 
+      pivot_wider(
+        names_from = "Age", values_from = "value"
+      ) %>% 
+      left_join(
+        df %>% distinct(Week, Delinquencies) %>% select(Cohort='Week', Delinquencies), by = "Cohort"
+      ) %>% 
+      select(
+        Cohort, "New Dels"=Delinquencies, where(is.double)
+      ) %>% 
+      arrange(desc(Cohort)) 
+  }
+    
+  
+  plotdf %>% filter(Cohort>Sys.Date()-400) %>% 
+    reactable(
+      columns = list(
+        `New Dels` = colDef(
+          format = colFormat(separators=TRUE, digits = 0)
+        ),
+        `Day 0` = colDef(# tooltip = TRUE hides the NA when needed
+          cell = my_color_tiles(.,  tooltip = TRUE, number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+        ),
+        `Week 1` = colDef(
+          cell = my_color_tiles(., tooltip = TRUE,  number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+        ),
+        `Week 2` = colDef(
+          cell = my_color_tiles(., tooltip = TRUE,  number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+        ),
+        `Week 3` = colDef(
+          cell = my_color_tiles(., tooltip = TRUE,  number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+        ),
+        `Week 4` = colDef(
+          cell = my_color_tiles(., tooltip = TRUE, number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+        ),
+        `Week 5` = colDef(
+          cell = color_tiles(., tooltip=TRUE, number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+          ),
+        `Week 6` = colDef(
+          cell = color_tiles(., tooltip=TRUE, number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+        ),
+        `Week 7` = colDef(
+          cell = color_tiles(., tooltip=TRUE, number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+        ),
+        `Week 8` = colDef(
+          cell = color_tiles(., tooltip=TRUE, number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+        )
+      ),
+      height = 400,
+      pagination = F
+    )
+}
+
+vendorBCRheatmap(
+    BCvendor, 
+    myProd = 'SLN',
+    myDay = NULL, 
+    myRate = "Cumulative"
+    )
+
+```
+
+## Day 0 BCR
+```{r wday select, eval=FALSE}
+radioGroupButtons(
+      "weekday",
+      label = "Weekday", status = "info",
+      individual = FALSE, size = "sm", 
+      choices = c("M"=2,"T"=3,"W"=4,"TH"=5,"F"=6,"S"=7,"Su"=1,"All"),
+      selected = "All"
+)
+```
+
+```{r daily bcr}
+# renderReactable({
+  # if (input$weekday != 'All') {
+  #   my_filter = expr(
+  #     Wday == input$weekday
+  #   )
+  # }else{
+    my_filter = expr(Date1 <= Sys.Date())# just to not have a blank filter
+  # }
+  
+  ABC %>% 
+    mutate(Wday = wday(Date1)) %>% 
+    filter(
+      eval(my_filter)
+    ) %>%
+    mutate(
+      Days = Date2 - Date1
+    ) %>% 
+    group_by(
+      Day = Date1
+    ) %>% 
+    summarise(
+      Day0Recoveries = n_distinct(application_id[Days==0], na.rm=T),
+      Delinquencies = n_distinct(application_id),
+      `Day 0 Rate` = Day0Recoveries/Delinquencies
+    ) %>% 
+    arrange(desc(Day)) %>% 
+    reactable(
+      striped = T,
+      columns = list(
+        `Day 0 Rate` = colDef(
+          cell = color_tiles(., number_fmt = scales::label_percent(accuracy = .01), colors = rev(viridis::viridis(5)))
+          )
+      ),
+      pagination=FALSE,
+      width = 550,
+      height = 250
+    )
+# })
+```
+
+## Dollars Collected by Collections
+```{r plt opt choice, eval=FALSE}
+radioGroupButtons(
+      "dolls",
+      label = "Choose a View", status = "info",
+      individual = FALSE, size = "sm", choices = c("Cuml","Daily"),
+      selected = "Cuml"
+)
+```
+
+```{r col doll}
+
+hcdf<- 
+  # reactive({
+  # if(input$dolls == "Cuml"){
+    pinned$dollars %>%
+      arrange(day) %>% mutate(amount_paid = cumsum(amount_paid)) %>% 
+    group_by(
+      name = "Collected Dollars",
+      color = sd_palette[7],
+      type = 'line',
+      lineWidth = 3
+    ) %>% arrange(day) %>% 
+    do(data=list_parse(
+      data.frame(
+        x = datetime_to_timestamp(.$day),
+        y = .$amount_paid)))
+  # }else{
+  #   pinned$dollars %>%
+  #   group_by(
+  #     name = "Collected Dollars",
+  #     color = sd_palette[7],
+  #     type = 'line',
+  #     lineWidth = 3
+  #   ) %>% arrange(day) %>% 
+  #   do(data=list_parse(
+  #     data.frame(
+  #       x = datetime_to_timestamp(.$day),
+  #       y = .$amount_paid)))
+  # }
+# })
+  
+# renderHighchart({
+  sd_highchart('stock') %>% 
+    # sdhc_title(text ="Collected Dollars from vendor Accts") %>%
+    sdhc_subtitle(paste0("Cuml Collected Dollars")) %>% 
+    hc_yAxis(
+      title=list(text='Collected Dollars'),
+      labels = list( 
+      formatter = JS()),
+      opposite=F
+    ) %>% 
+    hc_add_series_list(
+      hcdf
+    ) %>% 
+    sdhc_tooltip(
+      numberFormat = 'dollar'
+    ) %>% 
+    hc_navigator(enabled=FALSE) %>%
+    hc_rangeSelector(enabled=FALSE) %>%
+    hc_scrollbar(enabled=FALSE) %>% 
+    hc_legend(enabled=T)
+# })
+```
+
+
